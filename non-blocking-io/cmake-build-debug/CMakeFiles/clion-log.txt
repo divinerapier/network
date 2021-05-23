@@ -1,0 +1,4 @@
+/usr/sbin/cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=/usr/sbin/clang -DCMAKE_CXX_COMPILER=/usr/sbin/clang++ -DCMAKE_DEPENDS_USE_COMPILER=FALSE -G "CodeBlocks - Unix Makefiles" /home/divinerapier/code/c/github.com/divinerapier/network/blocking-io
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/divinerapier/code/c/github.com/divinerapier/network/blocking-io/cmake-build-debug

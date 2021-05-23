@@ -3,4 +3,5 @@
 .vscode
 
 # cmake
-thundering-herd/cmake-build-debug
+cmake-build-debug
+
