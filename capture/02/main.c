@@ -57,6 +57,12 @@ void print_datalink(const char *data) {
 
 }
 
+char *dump_mac(const unsigned char *mac, char *output) {
+    sprintf(output, "%02x:%02x:%02x:%02x:%02x:%02x",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return output;
+}
+
 void parse_packet(u_char *user, const struct pcap_pkthdr *packethdr,
                   const u_char *packetptr) {
     int linkhdrlen = *(int *) user;
@@ -66,39 +72,58 @@ void parse_packet(u_char *user, const struct pcap_pkthdr *packethdr,
     struct tcphdr *tcphdr;
     struct udphdr *udphdr;
     struct ethhdr *ethhdr;
+    struct ether_header *ether_header;
+    char src_mac[6 * 2 + 5 + 1] = {0}, dst_mac[6 * 2 + 5 + 1] = {0};
 
     char iphdrInfo[256], srcip[256], dstip[256];
 
-    ethhdr = (struct ethhdr *) packetptr;
-    printf("DATALINK. DST MAC: %s SRC: MAC: %s PROTO: %d\n", ethhdr->h_dest, ethhdr->h_source, ethhdr->h_proto);
+//    ethhdr = (struct ethhdr *) packetptr;
+//    printf("DATALINK. DST MAC: %s SRC: MAC: %s PROTO: %d\n", ethhdr->h_dest, ethhdr->h_source, ethhdr->h_proto);
+    ether_header = (struct ether_header *) packetptr;
+    printf("DATALINK. DST MAC: %s SRC: MAC: %s PROTO: %d\n", dump_mac(ether_header->ether_dhost, dst_mac),
+           dump_mac(ether_header->ether_shost, src_mac),
+           ether_header->ether_type);
     // Skip the datalink layer header and get the IP header fields.
     packetptr += linkhdrlen;
     iphdr = (struct ip *) packetptr;
     strcpy(srcip, inet_ntoa(iphdr->ip_src));
     strcpy(dstip, inet_ntoa(iphdr->ip_dst));
-    sprintf(iphdrInfo, "VER: %d ID:%d TOS:0x%x, TTL:%d IpLen:%d DgLen:%d",
-            iphdr->ip_v,
-            ntohs(iphdr->ip_id), iphdr->ip_tos, iphdr->ip_ttl,
-            4 * iphdr->ip_hl, ntohs(iphdr->ip_len));
-
+    int ip_off = ntohs(iphdr->ip_off);
+//    int ip_off = iphdr->ip_off;
+    sprintf(iphdrInfo, "IP. VER: %d HDRLEN: %d TOS:0x%x LEN: %d BODYLEN: %d\n"
+                       "ID: %d RF: %d DF: %d MF: %d FragOff: %d \n"
+                       "TTL:%d PROTO:%d CHECKSUM:%d \n"
+                       "SRC: %s\n"
+                       "DST: %s\n",
+            iphdr->ip_v, iphdr->ip_hl << 2, iphdr->ip_tos, ntohs(iphdr->ip_len),
+            ntohs(iphdr->ip_len) - (iphdr->ip_hl << 2),
+            ntohs(iphdr->ip_id), (ip_off & IP_RF) != 0, (ip_off & IP_DF) != 0, (ip_off & IP_MF) != 0,
+            ip_off & IP_OFFMASK,
+            iphdr->ip_ttl, iphdr->ip_p, ntohs(iphdr->ip_sum),
+            srcip, dstip);
+    int ip_body_len = ntohs(iphdr->ip_len) - (iphdr->ip_hl << 2);
     // Advance to the transport layer header then parse and display
     // the fields based on the type of hearder: tcp, udp or icmp.
     packetptr += 4 * iphdr->ip_hl;
     switch (iphdr->ip_p) {
         case IPPROTO_TCP:
             tcphdr = (struct tcphdr *) packetptr;
-            printf("TCP  %s:%d -> %s:%d\n", srcip, ntohs(tcphdr->th_sport),
+            printf("TCP. %s:%d -> %s:%d\n",
+                   srcip, ntohs(tcphdr->th_sport),
                    dstip, ntohs(tcphdr->th_dport));
             printf("%s\n", iphdrInfo);
-            printf("%c%c%c%c%c%c Seq: 0x%x Ack: 0x%x Win: 0x%x TcpLen: %d\n",
+            int tcp_body_len = ip_body_len - (tcphdr->th_off << 2);
+            printf("%c%c%c%c%c%c SEQ: 0x%x ACK: 0x%x WIN: 0x%x THOFF: 0x%x TCP BODY: 0x%x EXP ACK: 0x%x\n",
                    (tcphdr->th_flags & TH_URG ? 'U' : '*'),
                    (tcphdr->th_flags & TH_ACK ? 'A' : '*'),
                    (tcphdr->th_flags & TH_PUSH ? 'P' : '*'),
                    (tcphdr->th_flags & TH_RST ? 'R' : '*'),
                    (tcphdr->th_flags & TH_SYN ? 'S' : '*'),
-                   (tcphdr->th_flags & TH_SYN ? 'F' : '*'),
+                   (tcphdr->th_flags & TH_FIN ? 'F' : '*'),
                    ntohl(tcphdr->th_seq), ntohl(tcphdr->th_ack),
-                   ntohs(tcphdr->th_win), 4 * tcphdr->th_off);
+                   ntohs(tcphdr->th_win), tcphdr->th_off << 2, tcp_body_len,
+                   ntohl(tcphdr->th_seq) +
+                   ((((tcphdr->th_flags & TH_SYN) != 0) || ((tcphdr->th_flags & TH_FIN) != 0)) ? 1 : 0) + tcp_body_len);
             break;
 
         case IPPROTO_UDP:
@@ -132,6 +157,7 @@ int main(int argc, char **argv) {
     const u_char *packet;
     struct pcap_pkthdr hdr;     /* pcap.h */
     struct ether_header *eptr;  /* net/ethernet.h */
+    struct bpf_program filter;
 
     for (i = 0; i < argc; i++) {
         printf("[%d:%s]\t", i, argv[i]);
@@ -156,6 +182,19 @@ int main(int argc, char **argv) {
         exit(1);
     }
     printf("open live: %s\n", dev);
+
+    if (0 != pcap_compile(descr, &filter, argv[2], 1, 0)) {
+        char *errmsg = pcap_geterr(descr);
+        fprintf(stderr, "complie bpf error: %s\n", errmsg);
+        exit(2);
+    }
+
+    if (0 != pcap_setfilter(descr, &filter)) {
+        char *errmsg = pcap_geterr(descr);
+        fprintf(stderr, "set filter error: %s\n", errmsg);
+        exit(2);
+    }
+
     /* allright here we call pcap_loop(..) and pass in our callback function */
     /* int pcap_loop(pcap_t *p, int cnt, pcap_handler callback, u_char *user)*/
     /* If you are wondering what the user argument is all about, so am I!!   */
@@ -167,5 +206,6 @@ int main(int argc, char **argv) {
     pcap_loop(descr, 0, parse_packet, (u_char *) &dthdrlen);
 
     fprintf(stdout, "\nDone processing packets... wheew!\n");
+    pcap_close(descr);
     return 0;
 }
